@@ -1,0 +1,483 @@
+<html>
+
+<head>
+<title>Metaball madness</title>
+<meta http-equiv="content-type" content="text/html; charset=ISO-8859-1">
+
+<script type="text/javascript" src="glMatrix-0.9.5.min.js"></script>
+<script type="text/javascript" src="webgl-utils.js"></script>
+<link href='https://fonts.googleapis.com/css?family=Raleway' rel='stylesheet' type='text/css'>
+
+<script id="shader-fs" type="x-shader/x-fragment">
+
+	#define M_PI 3.1415926535897932384626433832795
+	#define det2
+	
+    precision mediump float;
+    uniform vec2 windowSize;
+    uniform float aspect;
+    uniform float time;
+    
+   	float deltaT = 0.005;
+
+    const int metaball_count = 5; 
+    uniform vec3 metaball_pos[metaball_count];
+    uniform float metaball_mass[metaball_count];
+
+
+	const int interpolation_depth = 40;
+	float gradient_interpolation_r = 0.000001;
+	
+	float dots[metaball_count];
+	
+	float rand(vec2 co){
+		return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+    }
+	
+	mat3 rotation_matrix(vec3 axis, float angle){
+		
+		axis = normalize(axis);
+		float s = sin(angle);
+		float c = cos(angle);
+		float oc = 1.0 - c;
+    
+    return mat3(oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s, 
+                oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s, 
+                oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c);
+    }
+
+	vec2 toCartesian(in vec2 pos){
+		pos *= windowSize;
+		pos -= vec2(0.5,0.5);
+		pos.y *= aspect;
+		return pos;
+	}
+	
+	float wave_function(in vec3 pos){
+		
+		float intensity = 0.0;		
+		for(int i = 0; i< metaball_count; i++){
+			float dst = length(pos-metaball_pos[i]);
+			intensity += pow(metaball_mass[i]*dst,-1.2);
+		}
+		return intensity;
+	}
+	
+	vec3 equipotential_collision(in float thrs,in vec3 pos,in vec3 dir){
+		vec3 coll = pos;
+		for(int i = 1; i < 200; i++){
+			float dff = wave_function(coll) - thrs;
+			if(dff > 0.0){
+				dff = max(0.001,dff);
+				coll -= deltaT*dir;
+			}
+			else{
+				for(int j = 1; j < 10; j++){
+					dff = wave_function(coll+deltaT/pow(2.0,float(j))*dir) - thrs;
+					if(dff < 0.0){
+						coll += deltaT/pow(2.0,float(j))*dir;
+					}
+				}
+				break;
+			}
+		}
+		return coll;
+	}
+
+	
+	vec3 equipotential_normal(in vec3 pos){
+		
+		float value = wave_function(pos);
+		
+		vec3 dff1 = gradient_interpolation_r*vec3(1.0,0.0,0.0);
+		vec3 dff2 = gradient_interpolation_r*vec3(0.0,1.0,0.0);
+		vec3 dff3 = gradient_interpolation_r*vec3(0.0,0.0,1.0);
+		
+		float increment1 = wave_function(dff1+pos)-value;
+		float increment2 = wave_function(dff2+pos)-value;
+		float increment3 = wave_function(dff3+pos)-value;
+		
+		vec3 grad = increment1*dff1+increment2*dff2+increment3*dff3;
+		
+		return normalize(grad);
+	}
+	
+    void main(void) {
+		
+		vec2 screen_pos = toCartesian(gl_FragCoord.xy);
+		vec3 dir = normalize(vec3(screen_pos,-1.0));
+		vec3 col = vec3(0.97);
+		vec3 pos = vec3(0.0);
+		
+		vec3 light_source = normalize(vec3(-0.5,0.1,1.0));
+		
+		float theta = 0.0*time;
+		vec3 axes = vec3(0.0,1.0,0.0);
+		
+		vec3 delta_pos = vec3(0.1*sin(theta),0.0,0.1*cos(theta)-0.01);
+		pos += delta_pos;
+		mat3 rot = rotation_matrix(axes,theta);
+		dir = dir*rot;
+		
+		float thrs = 2.0;
+		float test_point[metaball_count];
+		
+		for(int i = 0; i < metaball_count; i++){
+			vec3 mean_point = metaball_pos[i];
+			vec3 n = normalize(mean_point-pos);
+			if(dot(n,dir) > 0.95){
+				test_point[i] = dot(n,dir)*length(mean_point-pos);
+			}
+			else{test_point[i] = -1.0;}
+
+		}
+		
+		for(int i = 0; i < 1000000; i++){
+			bool swapped = false;
+			for(int j = 0; j < metaball_count-1; j++){
+				if(test_point[j] > test_point[j+1]){
+					swapped = true;
+					float tmp = test_point[j];
+					test_point[j] = test_point[j+1];
+					test_point[j+1] = tmp;
+				}
+			}
+			if(!swapped){
+				break;
+			}
+		}
+		
+		vec3 init_pos = pos;
+		
+		for(int i = 0; i < metaball_count; i++){
+			if(test_point[i]<0.0){continue;}
+			pos = init_pos;
+			pos += test_point[i]*dir;
+			float value = wave_function(pos);
+			if(value > thrs){
+				vec3 coll = equipotential_collision(thrs,pos,dir);
+				col=vec3(0.0);
+				vec3 n = equipotential_normal(coll);
+				float prod = pow(dot(n,light_source),3.0);
+				col += vec3(0.3,0.9,0.9)-prod*vec3(1.0);
+				break;
+			}
+		}
+
+        gl_FragColor = vec4(col,1.0);
+    }
+</script>
+
+<script id="shader-vs" type="x-shader/x-vertex">
+    attribute vec3 aVertexPosition;
+    attribute vec4 aVertexColor;
+
+    uniform mat4 uMVMatrix;
+    uniform mat4 uPMatrix;
+
+    void main(void) {
+        gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+    }
+</script>
+
+
+<script type="text/javascript">
+
+    var gl;
+    
+    var metaballs = [];
+    
+    var Metaball = function(count){
+		if(count > 10){
+		this.pos = [0.02*(Math.random()-0.5),0.02*(Math.random()-0.5),0.01*(Math.random()-0.1)];
+		this.vel = [10*(Math.random()-0.5),10*(Math.random()-0.5),10*(Math.random()-0.5)];
+		this.mass = 50*count*Math.random()+20*count;}
+		else{
+		this.pos = [0.02*(Math.random()-0.5),0.02*(Math.random()-0.5),0.01*(Math.random()-0.1)];
+		this.vel = [10*(Math.random()-0.5),10*(Math.random()-0.5),10*(Math.random()-0.5)];
+		if(count > 5){
+			this.mass = 1000*Math.random()+200;
+		}
+		else{this.mass = 500*Math.random()+100;}
+		}
+		}
+
+		
+	
+		
+	
+	
+	Metaball.prototype.updatePosition = function(deltaT){
+		
+		deltaT *= 0.025;
+		
+		var dff = vsum([0.0,0.0,-0.01],vscale(this.pos,-1));
+		var dst = vlength(dff);
+		dst = Math.max(0.01,dst);
+		
+		this.vel = vsum(this.vel,vscale(vscale(dff,1),100000*deltaT/(this.mass*Math.pow(dst,2.0))));
+		
+		for(var i = 0; i < metaballs.legnth; i++){
+			var dst = vlength(this.pos,metaballs[i].pos);
+			if(dst==0){continue;}
+			var dff = vsum(metaballs[i].pos,vscale(this.pos,-1));
+			var dst = vlength(dff);
+			dst = Math.max(0.0001,dst);
+			this.vel = vsum(this.vel,vscale(vscale(dff,1),5000000*deltaT/(this.mass*Math.pow(dst,2.0))));
+			
+		}
+		
+		
+		this.vel = vscale(this.vel,0.997);
+		
+		for(var i = 0; i < 3; i++){
+			if(Math.abs(this.pos[i])>0.04){
+				while(Math.abs(this.pos[i])>0.0395){
+					this.pos[i]*=0.99;
+				}
+				this.vel[i] *= -1;
+			}
+		}
+		
+		this.pos = vsum(this.pos,vscale(this.vel,deltaT));
+	}
+	
+	function vsum(a,b){
+		var c = [];
+		for(var i = 0; i < a.length; i++){
+			c[i]= a[i]+b[i];
+		}
+		return c;
+		
+	}
+	
+	function vlength(v){
+		var l = 0;
+		for(var i = 0; i < v.length; i++){
+			l += Math.pow(v[i],2);
+		}
+		return Math.sqrt(l);
+	}
+    
+    function vscale(v,a){
+		var c = [];
+		for(var i = 0; i < v.length; i++){
+			c[i]= a*v[i];
+		}
+		return c;
+	}
+    
+    function initGL(canvas) {
+        try {
+            gl = canvas.getContext("experimental-webgl");
+            gl.viewportWidth = canvas.width;
+            gl.viewportHeight = canvas.height;
+        } catch (e) {
+        }
+        if (!gl) {
+            alert("Could not initialise WebGL, sorry :-(");
+        }
+    }
+
+
+    function getShader(gl, id) {
+        var shaderScript = document.getElementById(id);
+        if (!shaderScript) {
+            return null;
+        }
+
+        var str = "";
+        var k = shaderScript.firstChild;
+        while (k) {
+            if (k.nodeType == 3) {
+                str += k.textContent;
+            }
+            k = k.nextSibling;
+        }
+
+        var shader;
+        if (shaderScript.type == "x-shader/x-fragment") {
+            shader = gl.createShader(gl.FRAGMENT_SHADER);
+        } else if (shaderScript.type == "x-shader/x-vertex") {
+            shader = gl.createShader(gl.VERTEX_SHADER);
+        } else {
+            return null;
+        }
+
+        gl.shaderSource(shader, str);
+        gl.compileShader(shader);
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            alert(gl.getShaderInfoLog(shader));
+            return null;
+        }
+
+        return shader;
+    }
+
+
+    var shaderProgram;
+
+    function initShaders() {
+        var fragmentShader = getShader(gl, "shader-fs");
+        var vertexShader = getShader(gl, "shader-vs");
+
+        shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.linkProgram(shaderProgram);
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+            alert("Could not initialise shaders");
+        }
+
+        gl.useProgram(shaderProgram);
+
+        shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+        gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+
+        shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+        shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+        shaderProgram.windowSize = gl.getUniformLocation(shaderProgram, "windowSize");
+        shaderProgram.aspect = gl.getUniformLocation(shaderProgram, "aspect");
+        shaderProgram.time = gl.getUniformLocation(shaderProgram, "time");
+        shaderProgram.metaball_pos = gl.getUniformLocation(shaderProgram, "metaball_pos");
+        shaderProgram.metaball_mass = gl.getUniformLocation(shaderProgram, "metaball_mass");
+        var canvas = document.getElementById("game_canvas");
+        gl.uniform2f(shaderProgram.windowSize,1/canvas.width,1/canvas.height);
+        gl.uniform1f(shaderProgram.aspect,canvas.height/canvas.width);
+    }
+
+
+    var mvMatrix = mat4.create();
+    var pMatrix = mat4.create();
+
+    function setMatrixUniforms() {
+        gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+        gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+    }
+
+
+    var squareVertexPositionBuffer;
+    var squareVertexColorBuffer;
+
+    function initBuffers() {
+		squareVertexPositionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexPositionBuffer);
+        vertices = [
+             10.0,  10.0,  0.0,
+            -10.0,  10.0,  0.0,
+             10.0, -10.0,  0.0,
+            -10.0, -10.0,  0.0
+        ];
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+        squareVertexPositionBuffer.itemSize = 3;
+        squareVertexPositionBuffer.numItems = 4;
+    }
+    
+    function handle_click(){
+		for(var i = 0; i < metaballs.length; i++){
+			var e = metaballs[i];
+			var dff = vsum([0.0,0.0,0.01],e.pos);
+			var dst = vlength(dff);
+			dff = vscale(dff,1/dst);
+			var s = [0.2*(Math.random()-0.5),0.2*Math.random()*(Math.random()-0.5),0.2*Math.random()*(Math.random()-0.5)];
+			dff = vsum(dff,s);
+			var a = 50*Math.random();
+			metaballs[i].vel = vsum(metaballs[i].vel,vscale(dff,a)); 
+		}
+	}
+
+
+    function drawScene() {
+        gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+        mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 0.1, 100.0, pMatrix);
+
+        mat4.identity(mvMatrix);
+
+        mat4.translate(mvMatrix, [0.0, 0.0, -1.0]);
+        gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexPositionBuffer);
+        gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, squareVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+        setMatrixUniforms();
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, squareVertexPositionBuffer.numItems);
+    }
+    
+    var beginTime = new Date();
+    var lastTime = new Date();
+
+    
+    function animate() {
+		var timeNow = new Date().getTime();
+        
+        var elapsed = (timeNow - lastTime)/10000;
+        for(var i = 0; i < metaballs.length; i++){
+			metaballs[i].updatePosition(elapsed);
+			}
+		lastTime = timeNow;
+		
+		var pos_array = [];
+		for(var i = 0; i < metaballs.length; i++){
+			for(var j = 0; j < 3; j++){
+				pos_array.push(metaballs[i].pos[j]);
+			}
+		}
+		gl.uniform3fv(shaderProgram.metaball_pos,pos_array);
+		gl.uniform1f(shaderProgram.time,(new Date()-beginTime)/1000);
+    }
+
+    function tick() {
+        requestAnimFrame(tick);
+        drawScene();
+        animate();
+    }
+
+    function webGLStart() {
+        var canvas = document.getElementById("game_canvas");
+        canvas.width=window.innerWidth;
+        canvas.height=window.innerHeight;
+        initGL(canvas);
+        initShaders();
+        initBuffers();
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        gl.enable(gl.DEPTH_TEST);
+        
+        var masses = [];
+        
+        for(var i = 0; i <5; i++){
+			metaballs.push(new Metaball(5));
+			masses.push(metaballs[i].mass/1.2);
+		}
+		gl.uniform1fv(shaderProgram.metaball_mass,masses);
+        
+        tick();
+    }
+    
+</script>
+
+<script src="https://code.jquery.com/jquery-1.11.1.js"></script>
+</head>
+
+<script>
+	window.onload = function () {
+		webGLStart();
+}
+</script>
+
+<body style="margin:0;overflow:hidden;">
+	<div id="title_page" style="width:100%;height:100%;top=0;left=0;position:absolute;background-color:white;font-family:'Raleway';text-align:center;padding-top:2cm;pointer-events:none;opacity:0;">
+		<h1>Twenty One Circles</h1>
+		<b>A GLSL shader experiment.</b>
+		<p>By appsketch.xyz. Check out the blog for more.</p>
+	</div>
+    <canvas id="game_canvas" style="border: none;" width="800" height="600"></canvas>
+</body>
+<script>
+	$("#game_canvas").click(function(){
+		handle_click();
+	});
+</script>
+
+</html>
